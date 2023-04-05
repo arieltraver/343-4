@@ -9,25 +9,15 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"math/rand"
+	"time"
 )
 
-type RaftNode struct {
-	mu          sync.Mutex
-	currentTerm int
-	votedFor    int
-	logEntries  []LogEntry
-}
-
-type LogEntry struct {
-	Term    int
-	Command interface{}
-}
+type RaftNode int
 
 type VoteArguments struct {
 	Term         int
 	CandidateID  int
-	LastLogIndex int
-	LastLogTerm  int
 }
 
 type VoteReply struct {
@@ -38,10 +28,6 @@ type VoteReply struct {
 type AppendEntryArgument struct {
 	Term         int
 	LeaderID     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-	LeaderCommit int
 }
 
 type AppendEntryReply struct {
@@ -59,83 +45,131 @@ var selfID int
 var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
+var isLeader bool
+var mutex sync.Mutex
 
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and majority votes
-func (r *RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
+	mutex.Lock()
+	defer mutex.Unlock()
 
-	reply.Term = r.currentTerm
-	reply.ResultVote = false
+	//reply.Term = r.currentTerm
+	//reply.ResultVote = false
 
-	if arguments.Term < r.currentTerm { // candidate's term less than current term
+	if arguments.Term < currentTerm { // 
+		reply.Term = currentTerm // candidate's term less than current term
+		reply.ResultVote = false
 		return nil
 	}
 
-	if arguments.Term > r.currentTerm {
-		r.currentTerm = arguments.Term // update current term
-		r.votedFor = -1
+	if arguments.Term > currentTerm {
+		currentTerm = arguments.Term // update current term
+		votedFor = -1
 	}
 
-	if r.votedFor == -1 || r.votedFor == arguments.CandidateID {
-		lastLogIndex := len(r.logEntries) - 1
-		lastLogTerm := -1
-		if lastLogIndex >= 0 {
-			lastLogTerm = r.logEntries[lastLogIndex].Term
-		}
-
-		if arguments.LastLogTerm > lastLogTerm ||
-			(arguments.LastLogTerm == lastLogTerm && arguments.LastLogIndex >= lastLogIndex) {
-			r.votedFor = arguments.CandidateID
-			reply.ResultVote = true
-		}
+	if votedFor == -1 || votedFor == arguments.CandidateID {
+		reply.Term = currentTerm
+		reply.ResultVote = true
+		votedFor = arguments.CandidateID
+	} else {
+		reply.Term = currentTerm
+		reply.ResultVote = false
 	}
 
 	return nil
 }
 
+//generates a random integer between floor and ceiling half-open. do not input negative ceiling
+func (*RaftNode) randGen(floor int, ceiling int) int {
+	source := rand.NewSource(time.Now().UnixNano())
+	random := rand.New(source)
+	i := random.Intn(ceiling - floor)
+	return i + floor
+}
+
+/*sleeps and updates the timer, unless electionHappened
+//if electionhappened, resets the timer.
+//
+//if timer hits zero, it calls new election, which will return to this OR go to leader.
+//
+//this is the default "main" state of a non-leader node
+*/
+func (r *RaftNode) electionTimer(electionHappened chan bool ) {
+	timer := r.randGen(50, 100) //TODO: change these numbers
+	timerIsZero := make(chan bool, 1)
+	for {
+		select {
+		case <- electionHappened: //to be filled by vote function
+			timer = r.randGen(1, 50)
+		case <- timerIsZero:
+			LeaderElection()
+		default:
+			time.Sleep(1)
+			timer--
+			if timer == 0 {
+				timerIsZero <- true
+			}
+		}
+	}
+}
+
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and heartbeats
-func (r *RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
+	mutex.Lock()
+	defer mutex.Unlock()
 
-	reply.Term = r.currentTerm
-	reply.Success = false
-
-	if arguments.Term < r.currentTerm {
+	if arguments.Term < currentTerm {
+		reply.Term = currentTerm
+		reply.Success = false
 		return nil
 	}
 
-	if arguments.Term > r.currentTerm {
-		r.currentTerm = arguments.Term
-		r.votedFor = -1
-	}
-
-	if arguments.PrevLogIndex >= len(r.logEntries) ||
-		(arguments.PrevLogIndex >= 0 && r.logEntries[arguments.PrevLogIndex].Term != arguments.PrevLogTerm) {
-		return nil
-	}
-
-	r.logEntries = r.logEntries[:arguments.PrevLogIndex+1]
-	r.logEntries = append(r.logEntries, arguments.Entries...)
-
+	currentTerm = arguments.Term
+	isLeader = false
+	reply.Term = currentTerm
 	reply.Success = true
-
+	
 	return nil
 }
 
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
+	for {
+		mutex.Lock()
+		
+		voteCount := 1
+		
+	}
 }
 
 // You may use this function to help with handling the periodic heartbeats
 // Hint: Use this only if the node is a leader
-func Heartbeat() {
+func Heartbeat(r *RaftNode) {
+	timer := r.randGen(10, 40) //TODO: change these numbers
+	timerIsZero := make(chan bool, 1)
+	for {
+		select {
+		case <- timerIsZero:
+			r.SendHeartBeat()
+			timer = r.randGen(10, 40)
+		default:
+			time.Sleep(1)
+			timer--
+			if timer == 0 {
+				timerIsZero <- true
+			}
+		}
+	}
+}
+
+func (r *RaftNode) SendHeartBeat() {
+	//send a heartbeat to all nodes
+	//for node in []serverNodes...
 }
 
 func main() {
@@ -221,6 +255,7 @@ func main() {
 		// Once connection is finally established
 		// Save that connection information in the servers list
 		serverNodes = append(serverNodes, ServerConnection{index, element, client})
+
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
