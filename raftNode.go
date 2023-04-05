@@ -8,13 +8,26 @@ import (
 	"net/rpc"
 	"os"
 	"strconv"
+	"sync"
 )
 
-type RaftNode int
+type RaftNode struct {
+	mu          sync.Mutex
+	currentTerm int
+	votedFor    int
+	logEntries  []LogEntry
+}
+
+type LogEntry struct {
+	Term    int
+	Command interface{}
+}
 
 type VoteArguments struct {
-	Term        int
-	CandidateID int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 type VoteReply struct {
@@ -23,8 +36,12 @@ type VoteReply struct {
 }
 
 type AppendEntryArgument struct {
-	Term     int
-	LeaderID int
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntryReply struct {
@@ -46,7 +63,35 @@ var votedFor int
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and majority votes
-func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
+func (r *RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reply.Term = r.currentTerm
+	reply.ResultVote = false
+
+	if arguments.Term < r.currentTerm { // candidate's term less than current term
+		return nil
+	}
+
+	if arguments.Term > r.currentTerm {
+		r.currentTerm = arguments.Term // update current term
+		r.votedFor = -1
+	}
+
+	if r.votedFor == -1 || r.votedFor == arguments.CandidateID {
+		lastLogIndex := len(r.logEntries) - 1
+		lastLogTerm := -1
+		if lastLogIndex >= 0 {
+			lastLogTerm = r.logEntries[lastLogIndex].Term
+		}
+
+		if arguments.LastLogTerm > lastLogTerm ||
+			(arguments.LastLogTerm == lastLogTerm && arguments.LastLogIndex >= lastLogIndex) {
+			r.votedFor = arguments.CandidateID
+			reply.ResultVote = true
+		}
+	}
 
 	return nil
 }
@@ -54,7 +99,31 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and heartbeats
-func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
+func (r *RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reply.Term = r.currentTerm
+	reply.Success = false
+
+	if arguments.Term < r.currentTerm {
+		return nil
+	}
+
+	if arguments.Term > r.currentTerm {
+		r.currentTerm = arguments.Term
+		r.votedFor = -1
+	}
+
+	if arguments.PrevLogIndex >= len(r.logEntries) ||
+		(arguments.PrevLogIndex >= 0 && r.logEntries[arguments.PrevLogIndex].Term != arguments.PrevLogTerm) {
+		return nil
+	}
+
+	r.logEntries = r.logEntries[:arguments.PrevLogIndex+1]
+	r.logEntries = append(r.logEntries, arguments.Entries...)
+
+	reply.Success = true
 
 	return nil
 }
