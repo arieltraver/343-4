@@ -46,16 +46,13 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
-var mutex sync.Mutex
+var mutex sync.Mutex // to lock global variables
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and majority votes
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-
-	//reply.Term = r.currentTerm
-	//reply.ResultVote = false
 
 	if arguments.Term < currentTerm { // 
 		reply.Term = currentTerm // candidate's term less than current term
@@ -97,18 +94,15 @@ func randGen(floor int, ceiling int) int {
 */
 func electionTimer(electionReset chan bool) {
 	timer := randGen(50, 100) //TODO: change these numbers
-	timerIsZero := make(chan bool, 1)
 	for {
 		select {
 		case <- electionReset: //to be filled by vote function. needs long lifespan
 			timer = randGen(50, 100)
-		case <- timerIsZero:
-			LeaderElection()
 		default:
 			time.Sleep(1)
 			timer--
 			if timer == 0 {
-				timerIsZero <- true
+				LeaderElection()
 			}
 		}
 	}
@@ -199,7 +193,7 @@ func Heartbeat() {
 			time.Sleep(1)
 		}
 		mutex.Lock()
-		// stop sending heartbeats if 
+		// stop sending heartbeats if node stops being leader
 		if !isLeader {
 			mutex.Unlock()
 			return
