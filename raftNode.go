@@ -213,7 +213,7 @@ func main() {
 	// Read the values sent in the command line
 
 	// Get this sever's ID (same as its index for simplicity)
-	myID, err := strconv.Atoi(arguments[1])
+	myID, _ := strconv.Atoi(arguments[1])
 	// Get the information of the cluster configuration file containing information on other servers
 	file, err := os.Open(arguments[2])
 	if err != nil {
