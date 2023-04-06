@@ -46,7 +46,6 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
-var resetTimer *time.Timer
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 
@@ -56,30 +55,27 @@ func resetElectionTimeout() {
 }
 
 // The RequestVote RPC as defined in Raft
-// Hint 1: Use the description in Figure 2 of the paper
-// Hint 2: Only focus on the details related to leader election and majority votes
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	if arguments.Term < currentTerm { //
-		reply.Term = currentTerm // candidate's term less than current term
+	if arguments.Term < currentTerm {
+		reply.Term = currentTerm //
 		reply.ResultVote = false
 		return nil
 	}
 
 	if arguments.Term > currentTerm {
 		currentTerm = arguments.Term // update current term
-		votedFor = -1
+		votedFor = -1                // has not voted in this term
 	}
 
+	reply.Term = currentTerm
+	// the node has not voted or has voted for this candidate
 	if votedFor == -1 || votedFor == arguments.CandidateID {
-		reply.Term = currentTerm
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
-		resetElectionTimeout()
 	} else {
-		reply.Term = currentTerm
 		reply.ResultVote = false
 	}
 
@@ -124,10 +120,10 @@ func electionTimer(electionReset chan bool) {
 func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-
-	//reset the election timer
-	t := randGen(50, 200)
-	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+	/*
+		//reset the election timer
+		t := randGen(50, 200)
+		resetTimer = time.NewTimer(time.Millisecond * time.Duration(t)) */
 
 	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
@@ -151,7 +147,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
 	for {
-		<-electionTimeout.C // wait until the timer expires
+		<-electionTimeout.C // wait until timeout
 		mutex.Lock()
 
 		// initialize election
@@ -194,8 +190,6 @@ func LeaderElection() {
 				}
 			}(server)
 		}
-
-		// sleep for random duration before starting a new election if needed
 		resetElectionTimeout()
 	}
 }
@@ -203,29 +197,31 @@ func LeaderElection() {
 // You may use this function to help with handling the periodic heartbeats
 // Hint: Use this only if the node is a leader
 func Heartbeat() {
+	heartbeatTimer := time.NewTimer(100 * time.Millisecond)
 	for {
-		//TODO: use timer here
-		mutex.Lock()
-		// stop sending heartbeats if node stops being leader
-		if !isLeader {
+		select {
+		case <-heartbeatTimer.C:
+			mutex.Lock()
+			if !isLeader {
+				mutex.Unlock()
+				return
+			}
 			mutex.Unlock()
-			return
-		}
-		mutex.Unlock()
 
-		arguments := AppendEntryArgument{
-			Term:     currentTerm,
-			LeaderID: selfID,
-		}
+			arguments := AppendEntryArgument{
+				Term:     currentTerm,
+				LeaderID: selfID,
+			}
 
-		for _, node := range serverNodes {
-			go func(node ServerConnection) {
-				reply := AppendEntryReply{} // heartbeats carry no log entries
-				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
-			}(node)
+			for _, node := range serverNodes {
+				go func(node ServerConnection) {
+					reply := AppendEntryReply{} // heartbeats carry no log entries
+					node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
+				}(node)
+			}
+			heartbeatTimer.Reset(100 * time.Millisecond)
 		}
 	}
-
 }
 
 func main() {
