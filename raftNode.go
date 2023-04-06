@@ -46,6 +46,7 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
+var resetTimer *time.Timer
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 
@@ -124,6 +125,10 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	mutex.Lock()
 	defer mutex.Unlock()
 
+	//reset the election timer
+	t := randGen(50, 200)
+	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+
 	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
 		reply.Term = currentTerm
@@ -199,10 +204,7 @@ func LeaderElection() {
 // Hint: Use this only if the node is a leader
 func Heartbeat() {
 	for {
-		timer := randGen(10, 40) //TODO: change these numbers
-		for i := 0; i < timer; i++ {
-			time.Sleep(1)
-		}
+		//TODO: use timer here
 		mutex.Lock()
 		// stop sending heartbeats if node stops being leader
 		if !isLeader {
@@ -226,10 +228,6 @@ func Heartbeat() {
 
 }
 
-func (r *RaftNode) SendHeartBeat() {
-	//send a heartbeat to all nodes
-}
-
 func main() {
 	// The assumption here is that the command line arguments will contain:
 	// This server's ID (zero-based), location and name of the cluster configuration file
@@ -242,7 +240,7 @@ func main() {
 	// Read the values sent in the command line
 
 	// Get this sever's ID (same as its index for simplicity)
-	myID, err := strconv.Atoi(arguments[1])
+	myID, _ := strconv.Atoi(arguments[1])
 	// Get the information of the cluster configuration file containing information on other servers
 	file, err := os.Open(arguments[2])
 	if err != nil {
@@ -317,9 +315,14 @@ func main() {
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
-
+	t := randGen(50, 200)
+	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
 	// Once all the connections are established, we can start the typical operations within Raft
 	// Leader election and heartbeats are concurrent and non-stop in Raft
+	//idea 1: push a random number onto this, election timer grabs it from there and counts that much
+	//idea 2: push a boolean onto this, election timer works if it's there, spawns new election if not
+	//problem: if this is called at every response, will cause deadlock
+	//solution: when pushing from update field, pop something off then put something new
 
 	// HINT 1: You may need to start a thread here (or more, based on your logic)
 	// Hint 2: Main process should never stop
