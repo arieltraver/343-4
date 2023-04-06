@@ -47,7 +47,6 @@ var currentTerm int
 var votedFor int
 var isLeader bool
 var mutex sync.Mutex
-
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and majority votes
@@ -82,7 +81,7 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 }
 
 //generates a random integer between floor and ceiling half-open. do not input negative ceiling
-func (*RaftNode) randGen(floor int, ceiling int) int {
+func randGen(floor int, ceiling int) int {
 	source := rand.NewSource(time.Now().UnixNano())
 	random := rand.New(source)
 	i := random.Intn(ceiling - floor)
@@ -96,13 +95,13 @@ func (*RaftNode) randGen(floor int, ceiling int) int {
 //
 //this is the default "main" state of a non-leader node
 */
-func (r *RaftNode) electionTimer(electionHappened chan bool ) {
-	timer := r.randGen(50, 100) //TODO: change these numbers
+func electionTimer(electionReset chan bool) {
+	timer := randGen(50, 100) //TODO: change these numbers
 	timerIsZero := make(chan bool, 1)
 	for {
 		select {
-		case <- electionHappened: //to be filled by vote function
-			timer = r.randGen(1, 50)
+		case <- electionReset: //to be filled by vote function. needs long lifespan
+			timer = randGen(50, 100)
 		case <- timerIsZero:
 			LeaderElection()
 		default:
@@ -115,6 +114,7 @@ func (r *RaftNode) electionTimer(electionHappened chan bool ) {
 	}
 }
 
+
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and heartbeats
@@ -122,12 +122,15 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	mutex.Lock()
 	defer mutex.Unlock()
 
+	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
 		reply.Term = currentTerm
 		reply.Success = false
 		return nil
 	}
 
+	// if leader's term is greater or equal, update current term and set node as
+	// follower
 	currentTerm = arguments.Term
 	isLeader = false
 	reply.Term = currentTerm
@@ -142,34 +145,82 @@ func LeaderElection() {
 	for {
 		mutex.Lock()
 		
+		// initialize election
 		voteCount := 1
-		
+		currentTerm++
+		votedFor = selfID
+		isLeader = false
+
+		mutex.Unlock()
+
+		arguments := VoteArguments{
+			Term:        currentTerm,
+			CandidateID: selfID,
+		}
+
+		// request votes from other nodes
+		for _, server := range serverNodes {
+			go func(server ServerConnection) {
+				reply := VoteReply{}
+				err := server.rpcConnection.Call("RaftNode.RequestVote", arguments, &reply)
+				if err != nil {
+					return
+				}
+
+				mutex.Lock()
+				defer mutex.Unlock()
+
+				if reply.Term > currentTerm { // reply contains a higher term
+					currentTerm = reply.Term // update current term
+					votedFor = -1 // reset votedFor
+					isLeader = false // set node as follower
+				} else if reply.ResultVote {
+					voteCount++
+					// majority of votes is reached
+					if !isLeader && voteCount > len(serverNodes)/2 {
+						isLeader = true // node is set as leader
+						go Heartbeat() // start sending heartbeats
+					}
+				}
+			}(server)
+		}
+
+		// sleep for random duration before starting a new election if needed
+		time.Sleep(time.Duration(rand.Intn(150)+150) * time.Millisecond)
 	}
 }
 
 // You may use this function to help with handling the periodic heartbeats
 // Hint: Use this only if the node is a leader
-func Heartbeat(r *RaftNode) {
-	timer := r.randGen(10, 40) //TODO: change these numbers
-	timerIsZero := make(chan bool, 1)
+func Heartbeat() {
 	for {
-		select {
-		case <- timerIsZero:
-			r.SendHeartBeat()
-			timer = r.randGen(10, 40)
-		default:
+		timer := randGen(10, 40) //TODO: change these numbers
+		for i := 0; i < timer; i++ {
 			time.Sleep(1)
-			timer--
-			if timer == 0 {
-				timerIsZero <- true
-			}
+		}
+		mutex.Lock()
+		// stop sending heartbeats if 
+		if !isLeader {
+			mutex.Unlock()
+			return
+		}
+		mutex.Unlock()
+
+		arguments := AppendEntryArgument{
+			Term: currentTerm,
+			LeaderID: selfID,
+		}
+	
+		for _, node := range(serverNodes) {
+			reply := AppendEntryReply{}
+			node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
 		}
 	}
+	
 }
 
 func (r *RaftNode) SendHeartBeat() {
 	//send a heartbeat to all nodes
-	//for node in []serverNodes...
 }
 
 func main() {
