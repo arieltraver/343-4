@@ -46,10 +46,13 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
+var resetTimer *time.Timer
 var mutex sync.Mutex // to lock global variables
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and majority votes
+
+
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -85,29 +88,6 @@ func randGen(floor int, ceiling int) int {
 	return i + floor
 }
 
-/*sleeps and updates the timer, unless electionHappened
-//if electionhappened, resets the timer.
-//
-//if timer hits zero, it calls new election, which will return to this OR go to leader.
-//
-//this is the default "main" state of a non-leader node
-*/
-func electionTimer(electionReset chan bool) {
-	timer := randGen(50, 100) //TODO: change these numbers
-	for {
-		select {
-		case <- electionReset: //to be filled by vote function. needs long lifespan
-			timer = randGen(50, 100)
-		default:
-			time.Sleep(1)
-			timer--
-			if timer == 0 {
-				LeaderElection()
-			}
-		}
-	}
-}
-
 
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
@@ -115,6 +95,10 @@ func electionTimer(electionReset chan bool) {
 func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
+
+	//reset the election timer
+	t := randGen(50, 200)
+	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
 
 	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
@@ -136,6 +120,9 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
+	<- resetTimer.C //block until this timer is done
+	//if it gets reset in the background, then it will continue waiting
+	//possible data race, but this can't be locked here? probably not tho bc channel
 	for {
 		mutex.Lock()
 		
@@ -180,6 +167,7 @@ func LeaderElection() {
 		}
 
 		// sleep for random duration before starting a new election if needed
+		// TODO: time.Timer instead
 		time.Sleep(time.Duration(rand.Intn(150)+150) * time.Millisecond)
 	}
 }
@@ -188,10 +176,7 @@ func LeaderElection() {
 // Hint: Use this only if the node is a leader
 func Heartbeat() {
 	for {
-		timer := randGen(10, 40) //TODO: change these numbers
-		for i := 0; i < timer; i++ {
-			time.Sleep(1)
-		}
+		//TODO: use timer here
 		mutex.Lock()
 		// stop sending heartbeats if node stops being leader
 		if !isLeader {
@@ -206,16 +191,15 @@ func Heartbeat() {
 		}
 	
 		for _, node := range(serverNodes) {
-			reply := AppendEntryReply{}
-			node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
+			go func(node ServerConnection) {
+				reply := AppendEntryReply{}
+				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
+			}(node)
 		}
 	}
 	
 }
 
-func (r *RaftNode) SendHeartBeat() {
-	//send a heartbeat to all nodes
-}
 
 func main() {
 	// The assumption here is that the command line arguments will contain:
@@ -304,9 +288,14 @@ func main() {
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
-
+	t := randGen(50, 200)
+	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
 	// Once all the connections are established, we can start the typical operations within Raft
 	// Leader election and heartbeats are concurrent and non-stop in Raft
+	//idea 1: push a random number onto this, election timer grabs it from there and counts that much
+	//idea 2: push a boolean onto this, election timer works if it's there, spawns new election if not
+	//problem: if this is called at every response, will cause deadlock
+	//solution: when pushing from update field, pop something off then put something new
 
 	// HINT 1: You may need to start a thread here (or more, based on your logic)
 	// Hint 2: Main process should never stop
