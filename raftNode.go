@@ -52,11 +52,10 @@ var globalRand *rand.Rand
 
 func resetElectionTimeout() {
 	duration := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	fmt.Println("reset timer")
 	//if something hasn't been read from the channel, drain it to prevent race condition.
-	if !electionTimeout.Stop() { //stops the timer, checks if it needs draining
-		<-electionTimeout.C //drains
-	}
 	electionTimeout.Reset(duration) //resets the timer to new random value
+	fmt.Println("timer successfully reset")
 }
 
 func resetTimer(timer *time.Timer, dur int) {
@@ -79,21 +78,22 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	}
 
 	if arguments.Term > currentTerm {
-		fmt.Println("we have not voted in this term yet")
+		//fmt.Println("we have not voted in this term yet")
 		currentTerm = arguments.Term // update current term
 		votedFor = -1                // has not voted in this new, updated term
 	}
 
 	reply.Term = currentTerm
+	fmt.Println(currentTerm)
 	// the node has not voted or has voted for this candidate
 	if votedFor == -1 || votedFor == arguments.CandidateID {
 		fmt.Println("voting for candidate", arguments.CandidateID)
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
+		resetElectionTimeout()
 	} else {
 		reply.ResultVote = false
 	}
-
 	return nil
 }
 
@@ -156,9 +156,9 @@ func LeaderElection() {
 		}
 		fmt.Println("Initializing election")
 		// --- initialize election
-		voteCount := 1
+		voteCount := 1 // votes for itself
 		currentTerm++ // new term
-		votedFor = selfID // votes for itself
+		votedFor = selfID 
 		//isLeader = false
 
 		mutex.Unlock()
@@ -188,15 +188,14 @@ func LeaderElection() {
 					voteCount++
 					// receives votes from a majority of the servers
 					if !isLeader && voteCount > len(serverNodes)/2 {
+						fmt.Println("leader! ->", voteCount, "votes for", selfID)
 						isLeader = true // node is set as leader
 						fmt.Println("starting heartbeat function")
 						go Heartbeat()
-						resetElectionTimeout()
 					}
 				}
 			}(server)
 		}
-		fmt.Println("election timeout ran out!")
 		resetElectionTimeout()
 	}
 }
@@ -226,7 +225,7 @@ func Heartbeat() {
 				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
 			}(node)
 		}
-		resetTimer(heartbeatTimer, 100)
+		heartbeatTimer.Reset(100 * time.Millisecond)
 	}
 }
 
@@ -325,7 +324,9 @@ func main() {
 	isLeader = false
 	mutex = sync.Mutex{}
 	// seeding random number generator
-	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	source := rand.NewSource(time.Now().UnixNano())
+	globalRand = rand.New(source)
+	//rand.Seed(time.Now().UnixNano())
 	// initialize timer
 	t := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
 	electionTimeout = time.NewTimer(t)
