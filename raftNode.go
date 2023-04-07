@@ -50,8 +50,12 @@ var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 
 func resetElectionTimeout() {
+	//if something hasn't been read from the channel, drain it to prevent race condition.
+	if !electionTimeout.Stop() { //stops the timer, checks if it needs draining
+		<-electionTimeout.C //drains
+	}
 	duration := time.Duration(rand.Intn(150)+150) * time.Millisecond
-	electionTimeout.Reset(duration)
+	electionTimeout.Reset(duration) //resets the timer to new random value
 }
 
 // The RequestVote RPC as defined in Raft
@@ -311,7 +315,7 @@ func main() {
 	}
 	//initialize timer
 	t := randGen(50, 200)
-	
+
 	electionTimeout = time.NewTimer(time.Millisecond * time.Duration(t))
 	selfID = myID
 	currentTerm = 0
