@@ -53,14 +53,14 @@ var globalRand *rand.Rand
 func resetElectionTimeout() {
 	fmt.Println("reset timer")
 	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
-	if electionTimeout == nil {
-		fmt.Println("Null timer")
-		electionTimeout = time.NewTimer(tRandom)
-	} else {
+	//if electionTimeout == nil {
+		//fmt.Println("Null timer")
+		//electionTimeout = time.NewTimer(tRandom)
+	//} else {
 		electionTimeout.Stop()
 		electionTimeout.Reset(tRandom) //resets the timer to new random value
 		fmt.Println("timer successfully reset")
-	}
+	//}
 
 	//if something hasn't been read from the channel, drain it to prevent race condition.
 
@@ -267,6 +267,7 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		log.Fatal(err)
 	}
+	
 
 	// Following lines are to register the RPCs of this object of type RaftNode
 	api := new(RaftNode)
@@ -293,7 +294,17 @@ func main() {
 	// This loop will stop when all servers are connected
 	// Pro: Realistic setup
 	// Con: If one server is not set up correctly, the rest of the system will halt
-
+	selfID = myID
+	currentTerm = 0
+	votedFor = -1
+	isLeader = false
+	mutex = sync.Mutex{}
+	//var electionTimeoutInit = make(chan struct{})
+	// seeding random number generator
+	//rand.Seed(time.Now().UnixNano())
+	// initialize timer
+	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	electionTimeout = time.NewTimer(tRandom)
 	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	for index, element := range lines {
 		// Attempt to connect to the other server node
@@ -315,18 +326,7 @@ func main() {
 	}
 
 	// --- initialize global variables
-	selfID = myID
-	currentTerm = 0
-	votedFor = -1
-	isLeader = false
-	mutex = sync.Mutex{}
-	//var electionTimeoutInit = make(chan struct{})
-	// seeding random number generator
-	//rand.Seed(time.Now().UnixNano())
-	// initialize timer
-	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
-	electionTimeout = time.NewTimer(tRandom)
-	//<-electionTimeoutInit
+	
 	fmt.Println("Starting leader election")
 
 	// --- main process never stops
