@@ -54,7 +54,7 @@ func resetElectionTimeout() {
 	if !electionTimeout.Stop() { //stops the timer, checks if it needs draining
 		<-electionTimeout.C //drains
 	}
-	duration := time.Duration(rand.Intn(150)+150) * time.Millisecond
+	duration := time.Duration(rand.Intn(randGen(150, 300))) * time.Millisecond
 	electionTimeout.Reset(duration) //resets the timer to new random value
 }
 
@@ -62,21 +62,23 @@ func resetElectionTimeout() {
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-
 	if arguments.Term < currentTerm {
-		reply.Term = currentTerm //
+		fmt.Println("rejecting vote request. term:", currentTerm, ",", arguments.CandidateID, "has term:", arguments.Term)
+		reply.Term = currentTerm
 		reply.ResultVote = false
 		return nil
 	}
 
 	if arguments.Term > currentTerm {
+		fmt.Println("we have not voted in this term yet")
 		currentTerm = arguments.Term // update current term
-		votedFor = -1                // has not voted in this term
+		votedFor = -1                // has not voted in this new, updated term
 	}
 
 	reply.Term = currentTerm
 	// the node has not voted or has voted for this candidate
 	if votedFor == -1 || votedFor == arguments.CandidateID {
+		fmt.Println("voting for candidate", arguments.CandidateID)
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
 	} else {
@@ -127,6 +129,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	reply.Term = currentTerm
 	reply.Success = true
 	resetElectionTimeout() // heartbeat indicates a leader, so no new election
+	fmt.Println("received heartbeat.")
 
 	return nil
 }
@@ -135,7 +138,6 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
 
-	var wg sync.WaitGroup
 	//<- electTimer.C //block until this timer is done
 	//if it gets reset in the background, then it will continue waiting
 	//possible data race, but this can't be locked here? probably not tho bc channel
@@ -147,11 +149,14 @@ func LeaderElection() {
 	//
 	for {
 		<-electionTimeout.C // wait for election timeout
+		fmt.Println("election timeout ran out!")
 		mutex.Lock() // shared channel
-		if isLeader { // check if node is already leader so loop does not continue 
+		if isLeader { // check if node is already leader so loop does not continue
+			fmt.Println("ending leaderelection because I am now leader") 
 			mutex.Unlock()
 			return
 		}
+		fmt.Println("Initializing election")
 		// initialize election
 		voteCount := 1
 		currentTerm++
@@ -164,8 +169,8 @@ func LeaderElection() {
 			Term:        currentTerm,
 			CandidateID: selfID,
 		}
-		wg.Add(len(serverNodes))
 		// request votes from other nodes
+		fmt.Println("Requesting votes")
 		for _, server := range serverNodes {
 			go func(server ServerConnection) {
 				reply := VoteReply{}
@@ -186,6 +191,7 @@ func LeaderElection() {
 					// receives votes from a majority of the servers
 					if !isLeader && voteCount > len(serverNodes)/2 {
 						isLeader = true // node is set as leader
+						fmt.Println("starting heartbeat function")
 						go Heartbeat()
 						resetElectionTimeout()
 					}
@@ -215,6 +221,7 @@ func Heartbeat() {
 				LeaderID: selfID,
 			}
 
+			fmt.Println("Sending heartbeats")
 			for _, node := range serverNodes {
 				go func(node ServerConnection) {
 					reply := AppendEntryReply{} // heartbeats carry no log entries
@@ -297,7 +304,7 @@ func main() {
 	// Con: If one server is not set up correctly, the rest of the system will halt
 
 	for index, element := range lines {
-		// Attemp to connect to the other server node
+		// Attempt to connect to the other server node
 		client, err := rpc.DialHTTP("tcp", element)
 		// If connection is not established
 		for err != nil {
@@ -321,8 +328,10 @@ func main() {
 	currentTerm = 0
 	votedFor = -1
 	isLeader = false
+	mutex = sync.Mutex{}
 
-	var wg *sync.WaitGroup
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go LeaderElection()
 	wg.Wait() //waits forever.
 
