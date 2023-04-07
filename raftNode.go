@@ -49,7 +49,6 @@ var isLeader bool
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 var globalRand *rand.Rand
-var electionTimeoutInit chan struct{}
 
 func resetElectionTimeout() {
 	fmt.Println("reset timer")
