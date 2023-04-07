@@ -48,14 +48,23 @@ var votedFor int
 var isLeader bool
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
+var globalRand *rand.Rand
 
 func resetElectionTimeout() {
+	duration := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
 	//if something hasn't been read from the channel, drain it to prevent race condition.
 	if !electionTimeout.Stop() { //stops the timer, checks if it needs draining
 		<-electionTimeout.C //drains
 	}
-	duration := time.Duration(rand.Intn(randGen(150, 300))) * time.Millisecond
 	electionTimeout.Reset(duration) //resets the timer to new random value
+}
+
+func resetTimer(timer *time.Timer, dur int) {
+	duration := time.Duration(dur) * time.Millisecond
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timer.Reset(duration)
 }
 
 // The RequestVote RPC as defined in Raft
@@ -137,19 +146,8 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
-
-	//<- electTimer.C //block until this timer is done
-	//if it gets reset in the background, then it will continue waiting
-	//possible data race, but this can't be locked here? probably not tho bc channel
-
-	//for select
-	//case 1: <- wonElection (goes to the heartbeat, ENDS this.)
-	//case 2: <- electionTimeout (runs th election
-	//select statement waits on both channels
-	//
 	for {
 		<-electionTimeout.C // wait for election timeout
-		fmt.Println("election timeout ran out!")
 		mutex.Lock() // shared channel
 		if isLeader { // check if node is already leader so loop does not continue
 			fmt.Println("ending leaderelection because I am now leader") 
@@ -157,10 +155,10 @@ func LeaderElection() {
 			return
 		}
 		fmt.Println("Initializing election")
-		// initialize election
+		// --- initialize election
 		voteCount := 1
-		currentTerm++
-		votedFor = selfID
+		currentTerm++ // new term
+		votedFor = selfID // votes for itself
 		//isLeader = false
 
 		mutex.Unlock()
@@ -198,6 +196,7 @@ func LeaderElection() {
 				}
 			}(server)
 		}
+		fmt.Println("election timeout ran out!")
 		resetElectionTimeout()
 	}
 }
@@ -207,29 +206,27 @@ func LeaderElection() {
 func Heartbeat() {
 	heartbeatTimer := time.NewTimer(100 * time.Millisecond)
 	for {
-		select {
-		case <-heartbeatTimer.C:
-			mutex.Lock()
-			if !isLeader {
-				mutex.Unlock()
-				return
-			}
+		<-heartbeatTimer.C
+		mutex.Lock()
+		if !isLeader {
 			mutex.Unlock()
-
-			arguments := AppendEntryArgument{
-				Term:     currentTerm,
-				LeaderID: selfID,
-			}
-
-			fmt.Println("Sending heartbeats")
-			for _, node := range serverNodes {
-				go func(node ServerConnection) {
-					reply := AppendEntryReply{} // heartbeats carry no log entries
-					node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
-				}(node)
-			}
-			heartbeatTimer.Reset(100 * time.Millisecond)
+			return
 		}
+		mutex.Unlock()
+
+		arguments := AppendEntryArgument{
+			Term:     currentTerm,
+			LeaderID: selfID,
+		}
+
+		fmt.Println("Sending heartbeats")
+		for _, node := range serverNodes {
+			go func(node ServerConnection) {
+				reply := AppendEntryReply{} // heartbeats carry no log entries
+				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
+			}(node)
+		}
+		resetTimer(heartbeatTimer, 100)
 	}
 }
 
@@ -320,16 +317,20 @@ func main() {
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
-	//initialize timer
-	t := randGen(50, 200)
 
-	electionTimeout = time.NewTimer(time.Millisecond * time.Duration(t))
+	// --- initialize global variables
 	selfID = myID
 	currentTerm = 0
 	votedFor = -1
 	isLeader = false
 	mutex = sync.Mutex{}
+	// seeding random number generator
+	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	// initialize timer
+	t := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	electionTimeout = time.NewTimer(t)
 
+	// --- main process never stops
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go LeaderElection()
