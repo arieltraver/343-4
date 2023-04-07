@@ -74,6 +74,8 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	if arguments.Term < currentTerm {
 		fmt.Println("rejecting vote request. term:", currentTerm, ",", arguments.CandidateID, "has term:", arguments.Term)
 		reply.Term = currentTerm
+		fmt.Println("rejecting vote request. term:", currentTerm, ",", arguments.CandidateID, "has term:", arguments.Term)
+		reply.Term = currentTerm
 		reply.ResultVote = false
 		return nil
 	}
@@ -82,12 +84,14 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 		//fmt.Println("we have not voted in this term yet")
 		currentTerm = arguments.Term // update current term
 		votedFor = -1                // has not voted in this new, updated term
+		votedFor = -1                // has not voted in this new, updated term
 	}
 
 	reply.Term = currentTerm
 	fmt.Println(currentTerm)
 	// the node has not voted or has voted for this candidate
 	if votedFor == -1 || votedFor == arguments.CandidateID {
+		fmt.Println("voting for candidate", arguments.CandidateID)
 		fmt.Println("voting for candidate", arguments.CandidateID)
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
@@ -140,6 +144,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	reply.Success = true
 	resetElectionTimeout() // heartbeat indicates a leader, so no new election
 	fmt.Println("received heartbeat.")
+	fmt.Println("received heartbeat.")
 
 	return nil
 }
@@ -170,6 +175,7 @@ func LeaderElection() {
 		}
 		// request votes from other nodes
 		fmt.Println("Requesting votes")
+		fmt.Println("Requesting votes")
 		for _, server := range serverNodes {
 			go func(server ServerConnection) {
 				reply := VoteReply{}
@@ -197,6 +203,7 @@ func LeaderElection() {
 				}
 			}(server)
 		}
+		fmt.Println("election timeout ran out!")
 		resetElectionTimeout()
 	}
 }
@@ -206,6 +213,13 @@ func LeaderElection() {
 func Heartbeat() {
 	heartbeatTimer := time.NewTimer(100 * time.Millisecond)
 	for {
+		<-heartbeatTimer.C
+		mutex.Lock()
+		if !isLeader {
+			mutex.Unlock()
+			return
+		}
+		mutex.Unlock()
 		<-heartbeatTimer.C
 		mutex.Lock()
 		if !isLeader {
@@ -301,6 +315,7 @@ func main() {
 	// Con: If one server is not set up correctly, the rest of the system will halt
 
 	for index, element := range lines {
+		// Attempt to connect to the other server node
 		// Attempt to connect to the other server node
 		client, err := rpc.DialHTTP("tcp", element)
 		// If connection is not established
