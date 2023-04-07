@@ -98,22 +98,6 @@ sleeps and updates the timer, unless electionHappened
 //
 //this is the default "main" state of a non-leader node
 */
-func electionTimer(electionReset chan bool) {
-	timer := randGen(50, 100) //TODO: change these numbers
-	for {
-		select {
-		case <-electionReset: //to be filled by vote function. needs long lifespan
-			timer = randGen(50, 100)
-		default:
-			time.Sleep(1)
-			timer--
-			if timer == 0 {
-				LeaderElection()
-			}
-		}
-	}
-}
-
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
 // Hint 2: Only focus on the details related to leader election and heartbeats
@@ -146,18 +130,29 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
+
+	var wg sync.WaitGroup
 	//<- electTimer.C //block until this timer is done
 	//if it gets reset in the background, then it will continue waiting
 	//possible data race, but this can't be locked here? probably not tho bc channel
-	for {
-		<-electionTimeout.C // wait until timeout
-		mutex.Lock()
 
+	//for select
+	//case 1: <- wonElection (goes to the heartbeat, ENDS this.)
+	//case 2: <- electionTimeout (runs th election
+	//select statement waits on both channels
+	//
+	for {
+		<-electionTimeout.C // wait for election timeout
+		mutex.Lock() // shared channel
+		if isLeader { // check if node is already leader so loop does not continue 
+			mutex.Unlock()
+			return
+		}
 		// initialize election
 		voteCount := 1
 		currentTerm++
 		votedFor = selfID
-		isLeader = false
+		//isLeader = false
 
 		mutex.Unlock()
 
@@ -165,7 +160,7 @@ func LeaderElection() {
 			Term:        currentTerm,
 			CandidateID: selfID,
 		}
-
+		wg.Add(len(serverNodes))
 		// request votes from other nodes
 		for _, server := range serverNodes {
 			go func(server ServerConnection) {
@@ -187,7 +182,7 @@ func LeaderElection() {
 					// receives votes from a majority of the servers
 					if !isLeader && voteCount > len(serverNodes)/2 {
 						isLeader = true // node is set as leader
-						go Heartbeat()  // start sending heartbeats
+						go Heartbeat()
 						resetElectionTimeout()
 					}
 				}
@@ -314,9 +309,19 @@ func main() {
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
-	//reset the timer here.
+	//initialize timer
 	t := randGen(50, 200)
-	electTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+	
+	electionTimeout = time.NewTimer(time.Millisecond * time.Duration(t))
+	selfID = myID
+	currentTerm = 0
+	votedFor = -1
+	isLeader = false
+
+	var wg *sync.WaitGroup
+	go LeaderElection()
+	wg.Wait() //waits forever.
+
 	// Once all the connections are established, we can start the typical operations within Raft
 	// Leader election and heartbeats are concurrent and non-stop in Raft
 	//idea 1: push a random number onto this, election timer grabs it from there and counts that much
