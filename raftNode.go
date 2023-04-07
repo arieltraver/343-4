@@ -59,14 +59,6 @@ func resetElectionTimeout() {
 	fmt.Println("timer successfully reset")
 }
 
-func resetTimer(timer *time.Timer, dur int) {
-	duration := time.Duration(dur) * time.Millisecond
-	if !timer.Stop() {
-		<-timer.C
-	}
-	timer.Reset(duration)
-}
-
 // The RequestVote RPC as defined in Raft
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
@@ -163,13 +155,8 @@ func LeaderElection() {
 		fmt.Println("Initializing election")
 		// --- initialize election
 		voteCount := 1 // votes for itself
-<<<<<<< HEAD
-		currentTerm++ // new term
-		votedFor = selfID 
-=======
 		currentTerm++  // new term
 		votedFor = selfID
->>>>>>> 6980fd74e9c9b2fc8ccf24c6edb16602744e35c9
 		//isLeader = false
 
 		mutex.Unlock()
@@ -244,11 +231,7 @@ func Heartbeat() {
 				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
 			}(node)
 		}
-<<<<<<< HEAD
 		heartbeatTimer.Reset(100 * time.Millisecond)
-=======
-		heartbeatTimer = time.NewTimer(100 * time.Millisecond)
->>>>>>> 6980fd74e9c9b2fc8ccf24c6edb16602744e35c9
 	}
 }
 
