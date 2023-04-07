@@ -51,7 +51,6 @@ var electionTimeout *time.Timer
 var globalRand *rand.Rand
 
 func resetElectionTimeout() {
-	defer mutex.Unlock()
 	duration := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
 	fmt.Println("reset timer")
 	//if something hasn't been read from the channel, drain it to prevent race condition.
