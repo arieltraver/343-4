@@ -46,10 +46,6 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
-<<<<<<< HEAD
-var electTimer *time.Timer
-=======
->>>>>>> 28a7200740f0c1eb57c4a779309c07b19df69dc3
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 
