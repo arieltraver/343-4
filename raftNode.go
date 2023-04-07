@@ -42,6 +42,7 @@ type ServerConnection struct {
 }
 
 var selfID int
+var myLines []string
 var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
@@ -51,15 +52,13 @@ var electionTimeout *time.Timer
 var globalRand *rand.Rand
 
 func resetElectionTimeout() {
-	fmt.Println("reset timer")
 	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
-	//if electionTimeout == nil {
-		//fmt.Println("Null timer")
-		//electionTimeout = time.NewTimer(tRandom)
-	//} else {
+	/* if electionTimeout == nil {
+		fmt.Println("Null timer")
+		electionTimeout = time.NewTimer(tRandom)
+	} else { */
 		electionTimeout.Stop()
 		electionTimeout.Reset(tRandom) //resets the timer to new random value
-		fmt.Println("timer successfully reset")
 	//}
 
 	//if something hasn't been read from the channel, drain it to prevent race condition.
@@ -73,6 +72,7 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	defer mutex.Unlock()
 	if arguments.Term < currentTerm {
 		fmt.Println("rejecting vote request. term:", currentTerm, ",", arguments.CandidateID, "has term:", arguments.Term)
+		Reconnect(arguments.CandidateID, myLines[arguments.CandidateID])
 		reply.Term = currentTerm
 		reply.ResultVote = false
 		return nil
@@ -97,6 +97,24 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	return nil
 }
 
+func Reconnect(newId int, address string) error {
+	fmt.Println("troublemaker:", newId)
+	fmt.Println("attempting to recconnect with", address)
+	client, err := rpc.DialHTTP("tcp", address)
+	for err != nil {
+		// Record it in log
+		log.Println("Trying again. Connection error: ", err)
+		// Try again!
+		client, err = rpc.DialHTTP("tcp", address)
+	}
+	if newId > selfID {
+		newId -= 1
+	}
+	newConn := ServerConnection{serverID:newId,Address:address,rpcConnection:client}
+	serverNodes[newId].rpcConnection.Close() //close old connection
+	serverNodes[newId] = newConn
+	return nil
+}
 /*
 sleeps and updates the timer, unless electionHappened
 //if electionhappened, resets the timer.
@@ -120,6 +138,8 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	if arguments.Term < currentTerm {
 		reply.Term = currentTerm
 		reply.Success = false
+		isLeader = false
+		Reconnect(arguments.LeaderID, myLines[arguments.LeaderID])
 		return nil
 	}
 
@@ -139,7 +159,6 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
 	for {
-		if electionTimeout != nil {
 			<-electionTimeout.C // wait for election timeout
 			mutex.Lock()        // shared channel
 			if isLeader {       // check if node is already leader so loop does not continue
@@ -192,7 +211,6 @@ func LeaderElection() {
 			}
 			resetElectionTimeout()
 		}
-	}
 }
 
 // You may use this function to help with handling the periodic heartbeats
@@ -237,6 +255,18 @@ func main() {
 
 	// Get this sever's ID (same as its index for simplicity)
 	myID, _ := strconv.Atoi(arguments[1])
+	selfID = myID
+	currentTerm = 0
+	votedFor = -1
+	isLeader = false
+	mutex = sync.Mutex{}
+	//var electionTimeoutInit = make(chan struct{})
+	// seeding random number generator
+	//rand.Seed(time.Now().UnixNano())
+	// initialize timer
+	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	electionTimeout = time.NewTimer(tRandom)
 	// Get the information of the cluster configuration file containing information on other servers
 	file, err := os.Open(arguments[2])
 	if err != nil {
@@ -249,11 +279,13 @@ func main() {
 	// Read the IP:port info from the cluster configuration file
 	scanner := bufio.NewScanner(file)
 	lines := make([]string, 0)
+	myLines = make([]string, 0)
 	index := 0
 	for scanner.Scan() {
 		// Get server IP:port
 		text := scanner.Text()
 		log.Printf(text, index)
+		myLines = append(myLines, text) //saves all by index
 		if index == myID {
 			myPort = text
 			index++
@@ -294,20 +326,7 @@ func main() {
 	// This loop will stop when all servers are connected
 	// Pro: Realistic setup
 	// Con: If one server is not set up correctly, the rest of the system will halt
-	selfID = myID
-	currentTerm = 0
-	votedFor = -1
-	isLeader = false
-	mutex = sync.Mutex{}
-	//var electionTimeoutInit = make(chan struct{})
-	// seeding random number generator
-	//rand.Seed(time.Now().UnixNano())
-	// initialize timer
-	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
-	electionTimeout = time.NewTimer(tRandom)
-	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	for index, element := range lines {
-		// Attempt to connect to the other server node
 		// Attempt to connect to the other server node
 		client, err := rpc.DialHTTP("tcp", element)
 		// If connection is not established
