@@ -4,20 +4,20 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/rpc"
 	"os"
 	"strconv"
 	"sync"
-	"math/rand"
 	"time"
 )
 
 type RaftNode int
 
 type VoteArguments struct {
-	Term         int
-	CandidateID  int
+	Term        int
+	CandidateID int
 }
 
 type VoteReply struct {
@@ -26,8 +26,8 @@ type VoteReply struct {
 }
 
 type AppendEntryArgument struct {
-	Term         int
-	LeaderID     int
+	Term     int
+	LeaderID int
 }
 
 type AppendEntryReply struct {
@@ -46,41 +46,47 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
+<<<<<<< HEAD
 var electTimer *time.Timer
+=======
+>>>>>>> 28a7200740f0c1eb57c4a779309c07b19df69dc3
 var mutex sync.Mutex // to lock global variables
+var electionTimeout *time.Timer
+
+func resetElectionTimeout() {
+	duration := time.Duration(rand.Intn(150)+150) * time.Millisecond
+	electionTimeout.Reset(duration)
+}
+
 // The RequestVote RPC as defined in Raft
-// Hint 1: Use the description in Figure 2 of the paper
-// Hint 2: Only focus on the details related to leader election and majority votes
-
-
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
-	if arguments.Term < currentTerm { // 
-		reply.Term = currentTerm // candidate's term less than current term
+	if arguments.Term < currentTerm {
+		reply.Term = currentTerm //
 		reply.ResultVote = false
 		return nil
 	}
 
 	if arguments.Term > currentTerm {
 		currentTerm = arguments.Term // update current term
-		votedFor = -1
+		votedFor = -1                // has not voted in this term
 	}
 
+	reply.Term = currentTerm
+	// the node has not voted or has voted for this candidate
 	if votedFor == -1 || votedFor == arguments.CandidateID {
-		reply.Term = currentTerm
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
 	} else {
-		reply.Term = currentTerm
 		reply.ResultVote = false
 	}
 
 	return nil
 }
 
-//generates a random integer between floor and ceiling half-open. do not input negative ceiling
+// generates a random integer between floor and ceiling half-open. do not input negative ceiling
 func randGen(floor int, ceiling int) int {
 	source := rand.NewSource(time.Now().UnixNano())
 	random := rand.New(source)
@@ -88,6 +94,29 @@ func randGen(floor int, ceiling int) int {
 	return i + floor
 }
 
+/*
+sleeps and updates the timer, unless electionHappened
+//if electionhappened, resets the timer.
+//
+//if timer hits zero, it calls new election, which will return to this OR go to leader.
+//
+//this is the default "main" state of a non-leader node
+*/
+func electionTimer(electionReset chan bool) {
+	timer := randGen(50, 100) //TODO: change these numbers
+	for {
+		select {
+		case <-electionReset: //to be filled by vote function. needs long lifespan
+			timer = randGen(50, 100)
+		default:
+			time.Sleep(1)
+			timer--
+			if timer == 0 {
+				LeaderElection()
+			}
+		}
+	}
+}
 
 // The AppendEntry RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
@@ -95,10 +124,10 @@ func randGen(floor int, ceiling int) int {
 func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
-
-	//reset the election timer
-	t := randGen(50, 200)
-	electTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+	/*
+		//reset the election timer
+		t := randGen(50, 200)
+		resetTimer = time.NewTimer(time.Millisecond * time.Duration(t)) */
 
 	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
@@ -113,19 +142,21 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	isLeader = false
 	reply.Term = currentTerm
 	reply.Success = true
-	
+	resetElectionTimeout() // heartbeat indicates a leader, so no new election
+
 	return nil
 }
 
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
-	<- electTimer.C //block until this timer is done
+	//<- electTimer.C //block until this timer is done
 	//if it gets reset in the background, then it will continue waiting
 	//possible data race, but this can't be locked here? probably not tho bc channel
 	for {
+		<-electionTimeout.C // wait until timeout
 		mutex.Lock()
-		
+
 		// initialize election
 		voteCount := 1
 		currentTerm++
@@ -153,53 +184,52 @@ func LeaderElection() {
 
 				if reply.Term > currentTerm { // reply contains a higher term
 					currentTerm = reply.Term // update current term
-					votedFor = -1 // reset votedFor
-					isLeader = false // set node as follower
+					votedFor = -1            // reset votedFor
+					isLeader = false         // set node as follower
 				} else if reply.ResultVote {
 					voteCount++
-					// majority of votes is reached
+					// receives votes from a majority of the servers
 					if !isLeader && voteCount > len(serverNodes)/2 {
 						isLeader = true // node is set as leader
-						go Heartbeat() // start sending heartbeats
+						go Heartbeat()  // start sending heartbeats
+						resetElectionTimeout()
 					}
 				}
 			}(server)
 		}
-
-		// sleep for random duration before starting a new election if needed
-		// TODO: time.Timer instead
-		time.Sleep(time.Duration(rand.Intn(150)+150) * time.Millisecond)
+		resetElectionTimeout()
 	}
 }
 
 // You may use this function to help with handling the periodic heartbeats
 // Hint: Use this only if the node is a leader
 func Heartbeat() {
+	heartbeatTimer := time.NewTimer(100 * time.Millisecond)
 	for {
-		//TODO: use timer here
-		mutex.Lock()
-		// stop sending heartbeats if node stops being leader
-		if !isLeader {
+		select {
+		case <-heartbeatTimer.C:
+			mutex.Lock()
+			if !isLeader {
+				mutex.Unlock()
+				return
+			}
 			mutex.Unlock()
-			return
-		}
-		mutex.Unlock()
 
-		arguments := AppendEntryArgument{
-			Term: currentTerm,
-			LeaderID: selfID,
-		}
-	
-		for _, node := range(serverNodes) {
-			go func(node ServerConnection) {
-				reply := AppendEntryReply{}
-				node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
-			}(node)
+			arguments := AppendEntryArgument{
+				Term:     currentTerm,
+				LeaderID: selfID,
+			}
+
+			for _, node := range serverNodes {
+				go func(node ServerConnection) {
+					reply := AppendEntryReply{} // heartbeats carry no log entries
+					node.rpcConnection.Call("RaftNode.AppendEntry", arguments, &reply)
+				}(node)
+			}
+			heartbeatTimer.Reset(100 * time.Millisecond)
 		}
 	}
-	
 }
-
 
 func main() {
 	// The assumption here is that the command line arguments will contain:
