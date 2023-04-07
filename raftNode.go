@@ -48,31 +48,38 @@ var votedFor int
 var isLeader bool
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
+var globalRand *rand.Rand
+var electionTimeoutInit chan struct{}
 
 func resetElectionTimeout() {
-	source := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(source)
-	duration := time.Duration(r.Intn(150)+150) * time.Millisecond
 	fmt.Println("reset timer")
+	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	if electionTimeout == nil {
+		fmt.Println("Null timer")
+		electionTimeout = time.NewTimer(tRandom)
+	} else {
+		electionTimeout.Stop()
+		electionTimeout.Reset(tRandom) //resets the timer to new random value
+		fmt.Println("timer successfully reset")
+	}
+
 	//if something hasn't been read from the channel, drain it to prevent race condition.
-	electionTimeout.Stop()
-	electionTimeout.Reset(duration) //resets the timer to new random value
-	fmt.Println("timer successfully reset")
+
+	//}
 }
 
 // The RequestVote RPC as defined in Raft
 func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 	mutex.Lock()
+	defer mutex.Unlock()
 	if arguments.Term < currentTerm {
 		fmt.Println("rejecting vote request. term:", currentTerm, ",", arguments.CandidateID, "has term:", arguments.Term)
 		reply.Term = currentTerm
 		reply.ResultVote = false
-		mutex.Unlock()
 		return nil
 	}
 
 	if arguments.Term > currentTerm {
-		//fmt.Println("we have not voted in this term yet")
 		currentTerm = arguments.Term // update current term
 		votedFor = -1                // has not voted in this new, updated term
 	}
@@ -84,21 +91,11 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 		fmt.Println("voting for candidate", arguments.CandidateID)
 		reply.ResultVote = true
 		votedFor = arguments.CandidateID
-		mutex.Unlock()
 		resetElectionTimeout()
 	} else {
 		reply.ResultVote = false
-		mutex.Unlock()
 	}
 	return nil
-}
-
-// generates a random integer between floor and ceiling half-open. do not input negative ceiling
-func randGen(floor int, ceiling int) int {
-	source := rand.NewSource(time.Now().UnixNano())
-	random := rand.New(source)
-	i := random.Intn(ceiling - floor)
-	return i + floor
 }
 
 /*
@@ -143,56 +140,59 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
 	for {
-		<-electionTimeout.C // wait for election timeout
-		mutex.Lock()        // shared channel
-		if isLeader {       // check if node is already leader so loop does not continue
-			fmt.Println("ending leaderelection because I am now leader")
+		if electionTimeout != nil {
+			<-electionTimeout.C // wait for election timeout
+			mutex.Lock()        // shared channel
+			if isLeader {       // check if node is already leader so loop does not continue
+				fmt.Println("ending leaderelection because I am now leader")
+				mutex.Unlock()
+				return
+			}
+			fmt.Println("Initializing election")
+			// --- initialize election
+			voteCount := 1 // votes for itself
+			currentTerm++  // new term
+			votedFor = selfID
+			//isLeader = false
+
 			mutex.Unlock()
-			return
-		}
-		fmt.Println("Initializing election")
-		// --- initialize election
-		voteCount := 1 // votes for itself
-		currentTerm++  // new term
-		votedFor = selfID
-		//isLeader = false
 
-		mutex.Unlock()
-
-		arguments := VoteArguments{
-			Term:        currentTerm,
-			CandidateID: selfID,
-		}
-		// request votes from other nodes
-		fmt.Println("Requesting votes")
-		for _, server := range serverNodes {
-			go func(server ServerConnection) {
-				reply := VoteReply{}
-				err := server.rpcConnection.Call("RaftNode.RequestVote", arguments, &reply)
-				if err != nil {
-					return
-				}
-
-				mutex.Lock()
-				defer mutex.Unlock()
-
-				if reply.Term > currentTerm { // reply contains a higher term
-					currentTerm = reply.Term // update current term
-					votedFor = -1            // reset votedFor
-					isLeader = false         // set node as follower
-				} else if reply.ResultVote {
-					voteCount++
-					// receives votes from a majority of the servers
-					if !isLeader && voteCount > len(serverNodes)/2 {
-						fmt.Println("leader! ->", voteCount, "votes for", selfID)
-						isLeader = true // node is set as leader
-						fmt.Println("starting heartbeat function")
-						go Heartbeat()
+			arguments := VoteArguments{
+				Term:        currentTerm,
+				CandidateID: selfID,
+			}
+			// request votes from other nodes
+			fmt.Println("Requesting votes")
+			for _, server := range serverNodes {
+				go func(server ServerConnection) {
+					reply := VoteReply{}
+					err := server.rpcConnection.Call("RaftNode.RequestVote", arguments, &reply)
+					if err != nil {
+						return
 					}
-				}
-			}(server)
+
+					mutex.Lock()
+					defer mutex.Unlock()
+
+					if reply.Term > currentTerm { // reply contains a higher term
+						currentTerm = reply.Term // update current term
+						votedFor = -1            // reset votedFor
+						isLeader = false         // set node as follower
+					} else if reply.ResultVote {
+						voteCount++
+						// receives votes from a majority of the servers
+						if !isLeader && voteCount > len(serverNodes)/2 {
+							fmt.Println("leader! ->", voteCount, "votes for", selfID)
+							isLeader = true // node is set as leader
+							fmt.Println("starting heartbeat function")
+							go Heartbeat()
+						}
+					}
+
+				}(server)
+			}
+			resetElectionTimeout()
 		}
-		resetElectionTimeout()
 	}
 }
 
@@ -295,6 +295,7 @@ func main() {
 	// Pro: Realistic setup
 	// Con: If one server is not set up correctly, the rest of the system will halt
 
+	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	for index, element := range lines {
 		// Attempt to connect to the other server node
 		// Attempt to connect to the other server node
@@ -320,13 +321,14 @@ func main() {
 	votedFor = -1
 	isLeader = false
 	mutex = sync.Mutex{}
+	//var electionTimeoutInit = make(chan struct{})
 	// seeding random number generator
-	source := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(source)
 	//rand.Seed(time.Now().UnixNano())
 	// initialize timer
-	t := time.Duration(r.Intn(150)+150) * time.Millisecond
-	electionTimeout = time.NewTimer(t)
+	tRandom := time.Duration(globalRand.Intn(150)+150) * time.Millisecond
+	electionTimeout = time.NewTimer(tRandom)
+	//<-electionTimeoutInit
+	fmt.Println("Starting leader election")
 
 	// --- main process never stops
 	var wg sync.WaitGroup
