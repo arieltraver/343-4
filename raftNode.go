@@ -46,7 +46,7 @@ var serverNodes []ServerConnection
 var currentTerm int
 var votedFor int
 var isLeader bool
-var resetTimer *time.Timer
+var electTimer *time.Timer
 var mutex sync.Mutex // to lock global variables
 // The RequestVote RPC as defined in Raft
 // Hint 1: Use the description in Figure 2 of the paper
@@ -98,7 +98,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 
 	//reset the election timer
 	t := randGen(50, 200)
-	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+	electTimer = time.NewTimer(time.Millisecond * time.Duration(t))
 
 	// if leader's term is less than current term, reject append entry request
 	if arguments.Term < currentTerm {
@@ -120,7 +120,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 // You may use this function to help with handling the election time out
 // Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
-	<- resetTimer.C //block until this timer is done
+	<- electTimer.C //block until this timer is done
 	//if it gets reset in the background, then it will continue waiting
 	//possible data race, but this can't be locked here? probably not tho bc channel
 	for {
@@ -288,8 +288,9 @@ func main() {
 		// Record that in log
 		fmt.Println("Connected to " + element)
 	}
+	//reset the timer here.
 	t := randGen(50, 200)
-	resetTimer = time.NewTimer(time.Millisecond * time.Duration(t))
+	electTimer = time.NewTimer(time.Millisecond * time.Duration(t))
 	// Once all the connections are established, we can start the typical operations within Raft
 	// Leader election and heartbeats are concurrent and non-stop in Raft
 	//idea 1: push a random number onto this, election timer grabs it from there and counts that much
