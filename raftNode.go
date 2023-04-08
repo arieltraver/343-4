@@ -157,14 +157,13 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 		return nil
 	}
 
-	// if leader's term is greater or equal, update current term and set node as
-	// follower
+	// if leader's term is greater or equal, its leadership is valid
 	currentTerm = arguments.Term
-	isLeader = false
+	isLeader = false // current node is follower
 	reply.Term = currentTerm
 	reply.Success = true
 	resetElectionTimeout() // heartbeat indicates a leader, so no new election
-	fmt.Println("received heartbeat.")
+	fmt.Println("Received heartbeat")
 
 	return nil
 }
