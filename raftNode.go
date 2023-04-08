@@ -33,12 +33,18 @@ type VoteReply struct {
 	ResultVote bool
 }
 
+// AppendEntryArgument holds the information used by a leader to send an
+// AppendEntry RPC call and for followers to determine whether the AppendEntry
+// RPC call is valid.
 type AppendEntryArgument struct {
 	Term     int
 	LeaderID int
 	Address  string
 }
 
+// AppendEntryReply represents the response from a Raft node after processing a
+// AppendEntry RPC call, including the follower's term and the success status
+// of the call.
 type AppendEntryReply struct {
 	Term    int
 	Success bool
@@ -60,6 +66,9 @@ var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
 var globalRand *rand.Rand
 
+// resetElectionTimeout resets the election timeout to a new random duration.
+// This function should be called whenever an event occurs that prevents the need for a new election,
+// such as receiving a heartbeat from the leader or granting a vote to a candidate.
 func resetElectionTimeout() {
 	duration := time.Duration(globalRand.Intn(150)+151) * time.Millisecond
 	electionTimeout.Stop()          // Use Reset method only on stopped or expired timers
@@ -135,8 +144,6 @@ sleeps and updates the timer, unless electionHappened
 //this is the default "main" state of a non-leader node
 */
 // The AppendEntry RPC as defined in Raft
-// Hint 1: Use the description in Figure 2 of the paper
-// Hint 2: Only focus on the details related to leader election and heartbeats
 func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryReply) error {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -162,8 +169,6 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 	return nil
 }
 
-// You may use this function to help with handling the election time out
-// Hint: It may be helpful to call this method every time the node wants to start an election
 func LeaderElection() {
 	for {
 		<-electionTimeout.C // wait for election timeout
@@ -221,8 +226,9 @@ func LeaderElection() {
 	}
 }
 
-// You may use this function to help with handling the periodic heartbeats
-// Hint: Use this only if the node is a leader
+// Heartbeat is used when the current node is a leader and handles the periodic
+// sending of heartbeat messages to other nodes in the cluster to establish its
+// role as leader.
 func Heartbeat() {
 	heartbeatTimer := time.NewTimer(100 * time.Millisecond)
 	for {
