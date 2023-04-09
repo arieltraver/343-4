@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"errors"
 )
 
 // RaftNode represents a single Raft node in the cluster, providing the
@@ -65,13 +66,13 @@ var isLeader bool
 var myPort string
 var mutex sync.Mutex // to lock global variables
 var electionTimeout *time.Timer
-var globalRand *rand.Rand
 
 // resetElectionTimeout resets the election timeout to a new random duration.
 // This function should be called whenever an event occurs that prevents the need for a new election,
 // such as receiving a heartbeat from the leader or granting a vote to a candidate.
 func resetElectionTimeout() {
-	duration := time.Duration(globalRand.Intn(150)+151) * time.Millisecond
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	duration := time.Duration(r.Intn(150)+151) * time.Millisecond
 	electionTimeout.Stop()          // Use Reset method only on stopped or expired timers
 	electionTimeout.Reset(duration) // Resets the timer to new random value
 }
@@ -89,10 +90,9 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 
 		// if candidate has lower term, it may have failed and come back. call
 		// Reconnect() to try to update its rpc.Connection value in serverNodes
-		Reconnect(arguments.CandidateID, arguments.Address)
-
 		reply.Term = currentTerm
 		reply.ResultVote = false
+		go Reconnect(arguments.CandidateID, arguments.Address)
 		return nil
 	}
 
@@ -118,21 +118,27 @@ func (*RaftNode) RequestVote(arguments VoteArguments, reply *VoteReply) error {
 // Reconnect attempts to reconnect to the specified server node and updates the
 // rpcConnection in serverNodes.
 func Reconnect(newId int, address string) error {
+	connectTimer := time.NewTimer(200 * time.Millisecond)
 	fmt.Println("Attempting to reconnect with", address)
-	client, err := rpc.DialHTTP("tcp", address)
-	for err != nil {
-		// Record it in log
-		log.Println("Trying again. Connection error: ", err)
-		// Try again!
-		client, err = rpc.DialHTTP("tcp", address)
+	for {
+		select {
+		case <- connectTimer.C:
+			return errors.New("connection timed out") 
+		default:
+			client, err := rpc.DialHTTP("tcp", address)
+			if err != nil {
+				fmt.Println("trying again", err)
+			} else {
+				fmt.Println("Reconnected with", address)
+				// close old connection and replace with new connection
+				mutex.Lock()
+				serverNodes[address].rpcConnection.Close()
+				serverNodes[address] = ServerConnection{serverID: newId, Address: address, rpcConnection: client}
+				mutex.Unlock()
+				return nil	
+			}
+		}
 	}
-	fmt.Println("Reconnected with", address)
-
-	// close old connection and replace with new connection
-	serverNodes[address].rpcConnection.Close()
-	serverNodes[address] = ServerConnection{serverID: newId, Address: address, rpcConnection: client}
-
-	return nil
 }
 
 // AppendEntry processes an AppendEntry RPC call from the leader node. It checks the
@@ -148,7 +154,7 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 		reply.Term = currentTerm
 		reply.Success = false // not a valid heartbeat
 		isLeader = false
-		Reconnect(arguments.LeaderID, arguments.Address)
+		go Reconnect(arguments.LeaderID, arguments.Address)
 		return nil
 	}
 
@@ -171,15 +177,14 @@ func (*RaftNode) AppendEntry(arguments AppendEntryArgument, reply *AppendEntryRe
 func LeaderElection() {
 	for {
 		<-electionTimeout.C // wait for election timeout
-		mutex.Lock()
 
 		// check if node is already leader so loop does not continue
 		if isLeader {
 			fmt.Println("ending leaderelection because I am now leader")
-			mutex.Unlock()
 			return
 		}
 
+		mutex.Lock()
 		// initialize election
 		currentTerm++     // new term
 		votedFor = selfID // votes for itself
@@ -217,6 +222,7 @@ func LeaderElection() {
 						fmt.Println("Won election! ->", voteCount, "votes for", selfID)
 						isLeader = true // enters leader state
 						go Heartbeat()  // begins sending heartbeats
+						return
 					}
 				}
 
@@ -238,13 +244,13 @@ func Heartbeat() {
 			mutex.Unlock()
 			return
 		}
-		mutex.Unlock()
 
 		arguments := AppendEntryArgument{
 			Term:     currentTerm,
 			LeaderID: selfID,
 			Address:  myPort,
 		}
+		mutex.Unlock()
 
 		fmt.Println("Sending heartbeats")
 		for _, server := range serverNodes {
@@ -309,8 +315,8 @@ func main() {
 	isLeader = false // starts in the follower state
 	mutex = sync.Mutex{}
 
-	globalRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-	tRandom := time.Duration(globalRand.Intn(150)+151) * time.Millisecond
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	tRandom := time.Duration(r.Intn(150)+151) * time.Millisecond
 	electionTimeout = time.NewTimer(tRandom)
 
 	// --- Register the RPCs of this object of type RaftNode
